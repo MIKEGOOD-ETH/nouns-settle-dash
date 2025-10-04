@@ -42,6 +42,18 @@ body {
   color: #475569;
 }
 
+.data-source {
+  margin-top: 0.5rem;
+  font-size: 0.9375rem;
+  color: #475569;
+}
+
+.data-source a {
+  color: inherit;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
 .status {
   margin-left: auto;
   font-weight: 600;
@@ -143,10 +155,52 @@ main {
   background: rgba(37, 99, 235, 0.05);
 }
 
+}
+
+.leaderboard tbody tr:hover {
+  background: rgba(37, 99, 235, 0.05);
+}
+
 .placeholder {
   text-align: center;
   padding: 1rem 0;
   color: #64748b;
+}
+
+.address-label {
+  font-family: "JetBrains Mono", "SFMono-Regular", ui-monospace, "SFMono-Regular",
+    Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.95rem;
+  color: #1f2937;
+}
+
+.noun-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.5rem;
+}
+
+.noun-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+  border-radius: 1.25rem;
+  background: rgba(248, 250, 252, 0.95);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.noun-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 30px -20px rgba(15, 23, 42, 0.5);
+}
+
+.noun-card__header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
 }
 
 .address-label {
@@ -192,6 +246,19 @@ main {
 }
 
 .noun-card__title {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #0f172a;
+}
+
+.noun-card__subtitle {
+  margin: 0.15rem 0 0;
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+.noun-card__meta {
+  margin: 0;
   margin: 0;
   font-size: 1.25rem;
   color: #0f172a;

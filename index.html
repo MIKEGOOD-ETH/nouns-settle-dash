@@ -11,6 +11,15 @@
       <div class="title-block">
         <h1>Nouns Settler Dashboard</h1>
         <p>Follow every settled Noun auction and who closed it out.</p>
+        <p class="data-source">
+          Tracking settlements from
+          <a
+            id="auction-house-link"
+            href="https://etherscan.io/address/0x830BD73E4184ceF73443C15111a1DF14e495C706"
+            rel="noopener noreferrer"
+            target="_blank"
+          ></a>
+        </p>
       </div>
       <div class="status" id="status">Loading settlement data…</div>
     </header>
@@ -102,6 +111,33 @@
     </template>
 
     <script type="module">
+      const AUCTION_HOUSE_ADDRESS = "0x830BD73E4184ceF73443C15111a1DF14e495C706";
+      const GRAPH_ENDPOINTS = [
+        {
+          url: "https://api.thegraph.com/subgraphs/name/nounsdao/nouns-subgraph",
+          pageSize: 200,
+          methods: ["GET", "POST"],
+        },
+        {
+          url: "https://api.goldsky.com/api/public/project_clhg0hjfc02ns01xfb2dj26g6/subgraphs/nouns-subgraph/0.0.5/gn",
+          pageSize: 200,
+          methods: ["POST", "GET"],
+        },
+        {
+          url: "https://api.studio.thegraph.com/query/44954/nouns-mainnet/version/latest",
+          pageSize: 200,
+          methods: ["POST"],
+        },
+      ];
+      const ENS_RESOLVER_URL = "https://api.ensideas.com/ens/resolve/";
+      const MAX_PAGES = 20;
+      const WEI_PER_ETH = 10n ** 18n;
+      const GRAPH_QUERY =
+        "query SettledAuctions($first:Int!,$skip:Int!){auctions(first:$first,skip:$skip,orderBy:nounId,orderDirection:asc,where:{settled:true}){nounId amount endTime settled winner{id ens} bidder{id ens}}}";
+      const FETCH_TIMEOUT_MS = 20000;
+
+      const statusEl = document.getElementById("status");
+      const auctionHouseLink = document.getElementById("auction-house-link");
       const GRAPH_URL = "https://api.thegraph.com/subgraphs/name/nounsdao/nouns-subgraph";
       const ENS_RESOLVER_URL = "https://api.ensideas.com/ens/resolve/";
       const PAGE_SIZE = 200;
@@ -118,6 +154,16 @@
 
       const ensCache = new Map();
 
+      function initializeContractLink() {
+        if (!auctionHouseLink) return;
+        auctionHouseLink.textContent = AUCTION_HOUSE_ADDRESS;
+        auctionHouseLink.href = `https://etherscan.io/address/${AUCTION_HOUSE_ADDRESS}`;
+      }
+
+      function setStatus(message, isError = false, detail = "") {
+        statusEl.textContent = message;
+        statusEl.classList.toggle("status--error", isError);
+        statusEl.title = detail && isError ? detail : "";
       function setStatus(message, isError = false) {
         statusEl.textContent = message;
         statusEl.classList.toggle("status--error", isError);
@@ -168,6 +214,42 @@
       }
 
       async function fetchSettledAuctions() {
+        const endpointErrors = [];
+
+        for (const endpoint of GRAPH_ENDPOINTS) {
+          try {
+            const auctions = await fetchFromEndpoint(endpoint);
+            if (auctions.length) {
+              if (endpointErrors.length) {
+                console.warn("Recovered from earlier Graph endpoint errors:", endpointErrors);
+              }
+              return auctions;
+            }
+            if (!endpointErrors.length) {
+              return auctions;
+            }
+          } catch (error) {
+            console.warn(`Graph endpoint failed: ${endpoint.url}`, error);
+            endpointErrors.push({ url: endpoint.url, message: error?.message ?? String(error) });
+          }
+        }
+
+        const details = endpointErrors
+          .map((entry) => `• ${entry.url}: ${entry.message}`)
+          .join("\n");
+        throw new Error(`All settlement data sources failed.\n${details}`);
+      }
+
+      async function fetchFromEndpoint(endpoint) {
+        const auctions = [];
+        const pageSize = endpoint.pageSize ?? 200;
+
+        for (let page = 0; page < MAX_PAGES; page += 1) {
+          const variables = { first: pageSize, skip: page * pageSize };
+          const payload = await requestGraph(endpoint, variables);
+          if (payload.errors?.length) {
+            const message = payload.errors.map((err) => err.message).join("; ");
+            throw new Error(message || "GraphQL response contained errors");
         const auctions = [];
         for (let page = 0; page < MAX_PAGES; page += 1) {
           const response = await fetch(GRAPH_URL, {
@@ -208,6 +290,72 @@
 
           const pageAuctions = payload?.data?.auctions ?? [];
           auctions.push(...pageAuctions);
+
+          if (pageAuctions.length < pageSize) {
+            break;
+          }
+        }
+
+        return auctions.filter((auction) => auction.settled);
+      }
+
+      async function requestGraph(endpoint, variables) {
+        const methods = endpoint.methods ?? ["GET", "POST"];
+        const errors = [];
+
+        for (const method of methods) {
+          try {
+            const response = await performGraphRequest(endpoint, variables, method);
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status} ${response.statusText}`);
+            }
+            return response.json();
+          } catch (error) {
+            errors.push({ method, message: error?.message ?? String(error) });
+          }
+        }
+
+        const detail = errors.map((entry) => `${entry.method}: ${entry.message}`).join("; ");
+        throw new Error(detail);
+      }
+
+      function performGraphRequest(endpoint, variables, method) {
+        if (method === "GET") {
+          const url = new URL(endpoint.url);
+          url.searchParams.set("query", GRAPH_QUERY);
+          url.searchParams.set("variables", JSON.stringify(variables));
+          return fetchWithTimeout(url.toString(), {
+            method: "GET",
+            mode: "cors",
+            credentials: "omit",
+            cache: "no-store",
+          });
+        }
+
+        if (method === "POST") {
+          return fetchWithTimeout(endpoint.url, {
+            method: "POST",
+            mode: "cors",
+            credentials: "omit",
+            cache: "no-store",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: GRAPH_QUERY, variables }),
+          });
+        }
+
+        throw new Error(`Unsupported method ${method}`);
+      }
+
+      async function fetchWithTimeout(resource, options = {}) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        try {
+          const response = await fetch(resource, { ...options, signal: controller.signal });
+          return response;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
 
           if (pageAuctions.length < PAGE_SIZE) {
             break;
@@ -386,6 +534,7 @@
       }
 
       async function bootstrap() {
+        initializeContractLink();
         try {
           setStatus("Loading settlement data…");
           const rawAuctions = await fetchSettledAuctions();
@@ -412,6 +561,8 @@
           );
         } catch (error) {
           console.error(error);
+          const detail = error?.message ?? String(error);
+          setStatus("We couldn’t load data from the network. Please try again later.", true, detail);
           setStatus("We couldn’t load data from the network. Please try again later.", true);
         }
       }
