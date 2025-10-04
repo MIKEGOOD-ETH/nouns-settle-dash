@@ -3,13 +3,499 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Nouns Settle Dash</title>
+    <title>Nouns Settler Dashboard</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="hero">
-      <h1>Hello, World!</h1>
-      <p>Welcome to the freshly deployed Nouns Settle Dash site.</p>
+    <header class="page-header">
+      <div class="title-block">
+        <h1>Nouns Settler Dashboard</h1>
+        <p>Follow every settled Noun auction and who closed it out.</p>
+      </div>
+      <div class="status" id="status">Loading settlement data…</div>
+    </header>
+
+    <main>
+      <section class="panel">
+        <h2>At a glance</h2>
+        <div class="stats-grid">
+          <article class="stat-card">
+            <span class="stat-label">Total nouns settled</span>
+            <span class="stat-value" id="total-nouns">—</span>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">Unique settlers</span>
+            <span class="stat-value" id="unique-settlers">—</span>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">Highest settlement (ETH)</span>
+            <span class="stat-value" id="highest-settlement">—</span>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Leaderboard</h2>
+          <p class="panel-subtitle">
+            Ranked by the number of Noun auctions a wallet has settled. ENS names
+            are shown when available.
+          </p>
+        </div>
+        <div class="table-wrapper">
+          <table class="leaderboard" aria-describedby="leaderboard-caption">
+            <caption id="leaderboard-caption" class="sr-only">
+              Leaderboard of wallets with the most settled Noun auctions.
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">#</th>
+                <th scope="col">Settler</th>
+                <th scope="col">Settled</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboard-body">
+              <tr>
+                <td colspan="3" class="placeholder">Loading…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Settlements by Noun</h2>
+          <p class="panel-subtitle">
+            Explore each Noun, the wallet that settled it, and key auction
+            details.
+          </p>
+        </div>
+        <div id="noun-grid" class="noun-grid" role="list"></div>
+      </section>
     </main>
+
+    <template id="noun-card-template">
+      <article class="noun-card" role="listitem">
+        <header class="noun-card__header">
+          <img class="noun-card__image" alt="" loading="lazy" />
+          <div>
+            <h3 class="noun-card__title"></h3>
+            <p class="noun-card__subtitle"></p>
+          </div>
+        </header>
+        <dl class="noun-card__meta">
+          <div>
+            <dt>Settled by</dt>
+            <dd><span class="address-label"></span></dd>
+          </div>
+          <div>
+            <dt>Amount</dt>
+            <dd class="noun-card__amount"></dd>
+          </div>
+          <div>
+            <dt>Settled on</dt>
+            <dd class="noun-card__date"></dd>
+          </div>
+        </dl>
+      </article>
+    </template>
+
+    <script type="module">
+      const GRAPH_ENDPOINTS = [
+        {
+          url: "https://api.thegraph.com/subgraphs/name/nounsdao/nouns-subgraph",
+          pageSize: 200,
+          methods: ["GET", "POST"],
+        },
+        {
+          url: "https://api.goldsky.com/api/public/project_clhg0hjfc02ns01xfb2dj26g6/subgraphs/nouns-subgraph/0.0.5/gn",
+          pageSize: 200,
+          methods: ["POST", "GET"],
+        },
+        {
+          url: "https://api.studio.thegraph.com/query/44954/nouns-mainnet/version/latest",
+          pageSize: 200,
+          methods: ["POST"],
+        },
+      ];
+      const ENS_RESOLVER_URL = "https://api.ensideas.com/ens/resolve/";
+      const MAX_PAGES = 20;
+      const WEI_PER_ETH = 10n ** 18n;
+      const GRAPH_QUERY =
+        "query SettledAuctions($first:Int!,$skip:Int!){auctions(first:$first,skip:$skip,orderBy:nounId,orderDirection:asc,where:{settled:true}){nounId amount endTime settled winner{id ens} bidder{id ens}}}";
+      const FETCH_TIMEOUT_MS = 20000;
+
+      const statusEl = document.getElementById("status");
+      const leaderboardBody = document.getElementById("leaderboard-body");
+      const nounGrid = document.getElementById("noun-grid");
+      const nounTemplate = document.getElementById("noun-card-template");
+      const totalNounsEl = document.getElementById("total-nouns");
+      const uniqueSettlersEl = document.getElementById("unique-settlers");
+      const highestSettlementEl = document.getElementById("highest-settlement");
+
+      const ensCache = new Map();
+
+      function setStatus(message, isError = false, detail = "") {
+        statusEl.textContent = message;
+        statusEl.classList.toggle("status--error", isError);
+        statusEl.title = detail && isError ? detail : "";
+      }
+
+      function truncateAddress(address) {
+        if (!address) return "—";
+        return `${address.slice(0, 6)}…${address.slice(-4)}`;
+      }
+
+      function formatEth(value) {
+        if (!value) return "—";
+        try {
+          const raw = BigInt(value);
+          const whole = raw / WEI_PER_ETH;
+          const fraction = raw % WEI_PER_ETH;
+          const fractionStr = fraction
+            .toString()
+            .padStart(18, "0")
+            .slice(0, 4)
+            .replace(/0+$/, "");
+          return `${whole.toString()}${fractionStr ? "." + fractionStr : ""} ETH`;
+        } catch (error) {
+          return "—";
+        }
+      }
+
+      function formatDate(timestamp) {
+        if (!timestamp) return "—";
+        const numeric = Number(timestamp) * 1000;
+        if (!Number.isFinite(numeric)) return "—";
+        const date = new Date(numeric);
+        if (Number.isNaN(date.getTime())) return "—";
+        return date.toLocaleString(undefined, {
+          dateStyle: "medium",
+          timeStyle: "short",
+        });
+      }
+
+      function applyEnsLabels(root = document) {
+        root.querySelectorAll("[data-address]").forEach((element) => {
+          const address = element.dataset.address?.toLowerCase();
+          if (!address) return;
+          const ens = ensCache.get(address);
+          element.textContent = ens ?? truncateAddress(address);
+          element.title = ens ? `${ens} (${address})` : address;
+        });
+      }
+
+      async function fetchSettledAuctions() {
+        const endpointErrors = [];
+
+        for (const endpoint of GRAPH_ENDPOINTS) {
+          try {
+            const auctions = await fetchFromEndpoint(endpoint);
+            if (auctions.length) {
+              if (endpointErrors.length) {
+                console.warn("Recovered from earlier Graph endpoint errors:", endpointErrors);
+              }
+              return auctions;
+            }
+            if (!endpointErrors.length) {
+              return auctions;
+            }
+          } catch (error) {
+            console.warn(`Graph endpoint failed: ${endpoint.url}`, error);
+            endpointErrors.push({ url: endpoint.url, message: error?.message ?? String(error) });
+          }
+        }
+
+        const details = endpointErrors
+          .map((entry) => `• ${entry.url}: ${entry.message}`)
+          .join("\n");
+        throw new Error(`All settlement data sources failed.\n${details}`);
+      }
+
+      async function fetchFromEndpoint(endpoint) {
+        const auctions = [];
+        const pageSize = endpoint.pageSize ?? 200;
+
+        for (let page = 0; page < MAX_PAGES; page += 1) {
+          const variables = { first: pageSize, skip: page * pageSize };
+          const payload = await requestGraph(endpoint, variables);
+          if (payload.errors?.length) {
+            const message = payload.errors.map((err) => err.message).join("; ");
+            throw new Error(message || "GraphQL response contained errors");
+          }
+
+          const pageAuctions = payload?.data?.auctions ?? [];
+          auctions.push(...pageAuctions);
+
+          if (pageAuctions.length < pageSize) {
+            break;
+          }
+        }
+
+        return auctions.filter((auction) => auction.settled);
+      }
+
+      async function requestGraph(endpoint, variables) {
+        const methods = endpoint.methods ?? ["GET", "POST"];
+        const errors = [];
+
+        for (const method of methods) {
+          try {
+            const response = await performGraphRequest(endpoint, variables, method);
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status} ${response.statusText}`);
+            }
+            return response.json();
+          } catch (error) {
+            errors.push({ method, message: error?.message ?? String(error) });
+          }
+        }
+
+        const detail = errors.map((entry) => `${entry.method}: ${entry.message}`).join("; ");
+        throw new Error(detail);
+      }
+
+      function performGraphRequest(endpoint, variables, method) {
+        if (method === "GET") {
+          const url = new URL(endpoint.url);
+          url.searchParams.set("query", GRAPH_QUERY);
+          url.searchParams.set("variables", JSON.stringify(variables));
+          return fetchWithTimeout(url.toString(), {
+            method: "GET",
+            mode: "cors",
+            credentials: "omit",
+            cache: "no-store",
+          });
+        }
+
+        if (method === "POST") {
+          return fetchWithTimeout(endpoint.url, {
+            method: "POST",
+            mode: "cors",
+            credentials: "omit",
+            cache: "no-store",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: GRAPH_QUERY, variables }),
+          });
+        }
+
+        throw new Error(`Unsupported method ${method}`);
+      }
+
+      async function fetchWithTimeout(resource, options = {}) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        try {
+          const response = await fetch(resource, { ...options, signal: controller.signal });
+          return response;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
+      function processAuctions(rawAuctions) {
+        const processed = [];
+        const leaderboardMap = new Map();
+        let highestSale = 0n;
+
+        rawAuctions.forEach((auction) => {
+          const nounId = Number(auction.nounId);
+          const winner = auction.winner ?? auction.bidder ?? null;
+          const address = winner?.id?.toLowerCase();
+          const ens = winner?.ens ?? null;
+          const amount = auction.amount ?? "0";
+          const endTime = auction.endTime ?? null;
+
+          if (address && !ensCache.has(address)) {
+            ensCache.set(address, ens);
+          }
+
+          if (address) {
+            const item = leaderboardMap.get(address) ?? {
+              address,
+              count: 0,
+              ens: ens ?? null,
+            };
+            item.count += 1;
+            if (ens && !item.ens) {
+              item.ens = ens;
+            }
+            leaderboardMap.set(address, item);
+          }
+
+          try {
+            const wei = BigInt(amount);
+            if (wei > highestSale) {
+              highestSale = wei;
+            }
+          } catch (error) {
+            // Ignore parsing issues for the max tracker.
+          }
+
+          processed.push({
+            nounId,
+            address,
+            ens,
+            amount,
+            endTime,
+          });
+        });
+
+        return {
+          auctions: processed.sort((a, b) => a.nounId - b.nounId),
+          leaderboard: Array.from(leaderboardMap.values()).sort((a, b) => {
+            if (b.count !== a.count) return b.count - a.count;
+            return a.address.localeCompare(b.address);
+          }),
+          highestSale,
+        };
+      }
+
+      function renderStats(total, unique, highestSale) {
+        totalNounsEl.textContent = total.toLocaleString();
+        uniqueSettersText(uniqueSettlersEl, unique);
+        highestSettlementEl.textContent = formatEth(highestSale.toString());
+      }
+
+      function uniqueSettersText(element, value) {
+        element.textContent = value.toLocaleString();
+      }
+
+      function renderLeaderboard(entries) {
+        if (!entries.length) {
+          leaderboardBody.innerHTML =
+            '<tr><td colspan="3" class="placeholder">No settled auctions found.</td></tr>';
+          return;
+        }
+
+        leaderboardBody.innerHTML = "";
+        const fragment = document.createDocumentFragment();
+
+        entries.forEach((entry, index) => {
+          const row = document.createElement("tr");
+
+          const rankCell = document.createElement("td");
+          rankCell.textContent = String(index + 1);
+          row.appendChild(rankCell);
+
+          const addressCell = document.createElement("td");
+          const label = document.createElement("span");
+          label.className = "address-label";
+          label.dataset.address = entry.address;
+          addressCell.appendChild(label);
+          row.appendChild(addressCell);
+
+          const countCell = document.createElement("td");
+          countCell.textContent = entry.count.toLocaleString();
+          row.appendChild(countCell);
+
+          fragment.appendChild(row);
+        });
+
+        leaderboardBody.appendChild(fragment);
+        applyEnsLabels(leaderboardBody);
+      }
+
+      function renderNouns(auctions) {
+        nounGrid.innerHTML = "";
+        const fragment = document.createDocumentFragment();
+
+        auctions.forEach((auction) => {
+          const { nounId, address, ens, amount, endTime } = auction;
+          const instance = nounTemplate.content.cloneNode(true);
+          const card = instance.querySelector(".noun-card");
+          const image = instance.querySelector(".noun-card__image");
+          const title = instance.querySelector(".noun-card__title");
+          const subtitle = instance.querySelector(".noun-card__subtitle");
+          const addressLabel = instance.querySelector(".address-label");
+          const amountEl = instance.querySelector(".noun-card__amount");
+          const dateEl = instance.querySelector(".noun-card__date");
+
+          image.src = `https://noun.pics/${nounId}.png`;
+          image.alt = `Noun ${nounId}`;
+          title.textContent = `Noun #${nounId}`;
+          subtitle.textContent = address
+            ? "Settled auction"
+            : "Settler unavailable";
+
+          if (address) {
+            addressLabel.dataset.address = address;
+          } else {
+            addressLabel.textContent = "—";
+          }
+
+          amountEl.textContent = formatEth(amount);
+          dateEl.textContent = formatDate(endTime);
+
+          fragment.appendChild(instance);
+        });
+
+        nounGrid.appendChild(fragment);
+        applyEnsLabels(nounGrid);
+      }
+
+      async function resolveEnsNames(addresses) {
+        const unique = Array.from(new Set(addresses.map((addr) => addr?.toLowerCase()).filter(Boolean)));
+        const queue = unique.filter((address) => !ensCache.has(address));
+        if (!queue.length) return;
+
+        const concurrency = 4;
+        const workers = new Array(concurrency).fill(null).map(async () => {
+          while (queue.length) {
+            const address = queue.shift();
+            if (!address) return;
+            try {
+              const response = await fetch(`${ENS_RESOLVER_URL}${address}`);
+              if (!response.ok) {
+                ensCache.set(address, null);
+                continue;
+              }
+              const data = await response.json();
+              const name = data?.name ?? null;
+              ensCache.set(address, name);
+            } catch (error) {
+              ensCache.set(address, null);
+            }
+          }
+        });
+
+        await Promise.all(workers);
+      }
+
+      async function bootstrap() {
+        try {
+          setStatus("Loading settlement data…");
+          const rawAuctions = await fetchSettledAuctions();
+          if (!rawAuctions.length) {
+            setStatus("No settled auctions found yet.");
+            renderStats(0, 0, 0n);
+            renderLeaderboard([]);
+            renderNouns([]);
+            return;
+          }
+
+          const { auctions, leaderboard, highestSale } = processAuctions(rawAuctions);
+
+          renderStats(auctions.length, leaderboard.length, highestSale);
+          renderLeaderboard(leaderboard);
+          renderNouns(auctions);
+
+          const topAddresses = leaderboard.slice(0, 50).map((entry) => entry.address);
+          await resolveEnsNames(topAddresses);
+          applyEnsLabels();
+
+          setStatus(
+            `Loaded ${auctions.length.toLocaleString()} settlements · Last updated ${new Date().toLocaleTimeString()}`,
+          );
+        } catch (error) {
+          console.error(error);
+          const detail = error?.message ?? String(error);
+          setStatus("We couldn’t load data from the network. Please try again later.", true, detail);
+        }
+      }
+
+      bootstrap();
+    </script>
   </body>
 </html>
