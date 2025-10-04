@@ -11,6 +11,15 @@
       <div class="title-block">
         <h1>Nouns Settler Dashboard</h1>
         <p>Follow every settled Noun auction and who closed it out.</p>
+        <p class="data-source">
+          Tracking settlements from
+          <a
+            id="auction-house-link"
+            href="https://etherscan.io/address/0x830BD73E4184ceF73443C15111a1DF14e495C706"
+            rel="noopener noreferrer"
+            target="_blank"
+          ></a>
+        </p>
       </div>
       <div class="status" id="status">Loading settlement data…</div>
     </header>
@@ -102,6 +111,7 @@
     </template>
 
     <script type="module">
+      const AUCTION_HOUSE_ADDRESS = "0x830BD73E4184ceF73443C15111a1DF14e495C706";
       const GRAPH_ENDPOINTS = [
         {
           url: "https://api.thegraph.com/subgraphs/name/nounsdao/nouns-subgraph",
@@ -127,6 +137,7 @@
       const FETCH_TIMEOUT_MS = 20000;
 
       const statusEl = document.getElementById("status");
+      const auctionHouseLink = document.getElementById("auction-house-link");
       const leaderboardBody = document.getElementById("leaderboard-body");
       const nounGrid = document.getElementById("noun-grid");
       const nounTemplate = document.getElementById("noun-card-template");
@@ -135,6 +146,12 @@
       const highestSettlementEl = document.getElementById("highest-settlement");
 
       const ensCache = new Map();
+
+      function initializeContractLink() {
+        if (!auctionHouseLink) return;
+        auctionHouseLink.textContent = AUCTION_HOUSE_ADDRESS;
+        auctionHouseLink.href = `https://etherscan.io/address/${AUCTION_HOUSE_ADDRESS}`;
+      }
 
       function setStatus(message, isError = false, detail = "") {
         statusEl.textContent = message;
@@ -464,6 +481,7 @@
       }
 
       async function bootstrap() {
+        initializeContractLink();
         try {
           setStatus("Loading settlement data…");
           const rawAuctions = await fetchSettledAuctions();

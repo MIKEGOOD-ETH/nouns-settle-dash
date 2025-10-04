@@ -42,6 +42,18 @@ body {
   color: #475569;
 }
 
+.data-source {
+  margin-top: 0.5rem;
+  font-size: 0.9375rem;
+  color: #475569;
+}
+
+.data-source a {
+  color: inherit;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
 .status {
   margin-left: auto;
   font-weight: 600;
